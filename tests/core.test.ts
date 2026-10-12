@@ -40,7 +40,7 @@ describe("isFastEligible", () => {
 	});
 
 	it.each(gpt6ModelIds)("rejects %s on other providers", (id) => {
-		for (const provider of ["openai", "azure-openai", "custom-codex"]) {
+		for (const provider of ["openrouter", "azure-openai", "custom-codex", "custom-openai"]) {
 			expect(isFastEligible({ provider, id })).toBe(false);
 		}
 	});
@@ -55,6 +55,98 @@ describe("isFastEligible", () => {
 		{ provider: "anthropic", id: "claude-opus-4-6" },
 	])("rejects $provider/$id", (model) => {
 		expect(isFastEligible(model)).toBe(false);
+	});
+});
+
+describe("OpenAI Responses Fast mode", () => {
+	const openai = (id: string): ModelDescriptor => ({
+		provider: "openai",
+		id,
+		api: "openai-responses",
+		baseUrl: "https://api.openai.com/v1",
+	});
+
+	it.each(gpt6ModelIds)("accepts exactly %s without borrowing Codex estimates", (id) => {
+		expect(isFastEligible(openai(id))).toBe(true);
+		expect(isFastEligible({ provider: "openai", id })).toBe(true);
+		expect(isFastEligible({ ...openai(id), baseUrl: "https://api.openai.com/v1/" })).toBe(true);
+		expect(getFastCreditMultiplier(openai(id))).toBeUndefined();
+		const payload = Object.freeze({ model: id, reasoning: Object.freeze({ effort: "high" }) });
+		const result = applyFastServiceTier(payload, true, openai(id));
+		expect(result.applied).toBe(true);
+		expect(result.payload).toEqual({ ...payload, service_tier: "priority" });
+		expect(result.payload).not.toBe(payload);
+		if (result.applied) expect(result.payload.reasoning).toBe(payload.reasoning);
+		expect(payload).not.toHaveProperty("service_tier");
+	});
+
+	it.each([...unsupportedGpt6ModelIds, "gpt-5.4", "gpt-5.5", "gpt-5.6-sol"])(
+		"rejects unsupported OpenAI ID %s",
+		(id) => {
+			expect(isFastEligible(openai(id))).toBe(false);
+			const payload = Object.freeze({ model: id, service_tier: "default" });
+			expect(applyFastServiceTier(payload, true, openai(id))).toEqual({
+				applied: false,
+				payload,
+				reason: "unsupported-model",
+			});
+			expect(applyFastServiceTier(payload, true, openai(id)).payload).toBe(payload);
+		},
+	);
+
+	it.each([
+		{ api: "openai-completions" },
+		{ api: "openai-codex-responses" },
+		{ api: "custom-responses" },
+		{ baseUrl: "https://proxy.example/v1" },
+		{ baseUrl: "https://api.openai.com/v1/responses" },
+		{ baseUrl: "http://api.openai.com/v1" },
+		{ baseUrl: "https://api.openai.com.example/v1" },
+		{ baseUrl: "https://api.openai.com/v1?route=proxy" },
+		{ baseUrl: "https://api.openai.com/v1#proxy" },
+		{ baseUrl: "" },
+	])("rejects a visibly misrouted descriptor %j", (override) => {
+		const model = { ...openai("gpt-6.1-sol"), ...override };
+		expect(isFastEligible(model)).toBe(false);
+		const payload = Object.freeze({ service_tier: "flex" });
+		expect(applyFastServiceTier(payload, true, model).payload).toBe(payload);
+		expect(applyFastServiceTier(payload, true, model).applied).toBe(false);
+	});
+
+	it.each(["gpt-6-sol", "gpt-5.6-sol", null, 42])(
+		"rejects a visible payload-model mismatch %j",
+		(model) => {
+			const payload = Object.freeze({ model });
+			const result = applyFastServiceTier(payload, true, openai("gpt-6.1-sol"));
+			expect(result.applied).toBe(false);
+			expect(result.payload).toBe(payload);
+		},
+	);
+
+	it.each(gpt6ModelIds)("preserves off and immutable tier-conflict behavior for %s", (id) => {
+		for (const tier of ["default", "flex", "fast", "priority", "ultrafast"]) {
+			const payload = Object.freeze({ model: id, service_tier: tier });
+			const off = applyFastServiceTier(payload, false, openai(id));
+			expect(off.applied).toBe(false);
+			expect(off.payload).toBe(payload);
+			const on = applyFastServiceTier(payload, true, openai(id));
+			expect(on.applied).toBe(true);
+			if (!on.applied) throw new Error("Expected Fast mode to apply");
+			expect(on.previousServiceTier).toBe(tier);
+			expect(on.changed).toBe(tier !== "priority");
+			expect(on.payload.service_tier).toBe("priority");
+			if (tier === "priority") expect(on.payload).toBe(payload);
+			else expect(on.payload).not.toBe(payload);
+			expect(payload.service_tier).toBe(tier);
+		}
+	});
+
+	it.each([null, undefined, [], "request", 42])("skips invalid payload %j", (payload) => {
+		expect(applyFastServiceTier(payload, true, openai("gpt-6-sol"))).toEqual({
+			applied: false,
+			payload,
+			reason: "invalid-payload",
+		});
 	});
 });
 
@@ -123,7 +215,7 @@ describe("applyFastServiceTier", () => {
 		"leaves disabled and unsupported %s requests untouched",
 		(id) => {
 			const payload = Object.freeze({ model: id, service_tier: "flex" });
-			const models = [{ provider: "openai", id }];
+			const models = [{ provider: "custom-openai", id }];
 			if (unsupportedGpt6ModelIds.includes(id)) models.push(codex(id));
 			for (const model of models) {
 				expect(applyFastServiceTier(payload, true, model)).toEqual({
