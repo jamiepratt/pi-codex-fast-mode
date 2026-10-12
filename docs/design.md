@@ -11,7 +11,7 @@ Pi intentionally keeps provider-specific service-tier policy outside its core ab
 1. Request Codex Fast mode with the smallest possible provider mutation.
 2. Make additional credit consumption explicit and opt-in.
 3. Keep reasoning effort and response verbosity independent.
-4. Scope activation conservatively by provider and model family.
+4. Scope activation conservatively by provider, existing GPT-5 families, and documented GPT-6 IDs.
 5. Persist only package-owned state, never Pi's shared settings.
 6. Fail safely and transparently.
 7. Remain auditable and dependency-free at runtime.
@@ -44,7 +44,7 @@ Before each provider request:
 
 1. Exit without returning a payload when the preference is off.
 2. Require provider `openai-codex`.
-3. Require a GPT-5.4, GPT-5.5, or GPT-5.6 model ID.
+3. Require an existing GPT-5.4, GPT-5.5, or GPT-5.6 family ID, or exactly `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, or `gpt-6.1-sol`.
 4. Require a record-shaped payload.
 5. return a shallow copy with `service_tier: "priority"`.
 
@@ -52,24 +52,29 @@ Nested payload values are preserved by reference, and the incoming payload is ne
 
 ## Why the wire value is `priority`
 
-The official Codex CLI presents `fast` as a user configuration value. Its `ServiceTier::request_value` implementation maps both `fast` and explicit `priority` configuration to `priority` in the provider request. Sending `service_tier: "fast"` would copy the configuration vocabulary rather than the current wire contract.
+The extension retains `service_tier: "priority"`. The current OpenAI API Fast mode guide explicitly documents `priority` as equivalent to `fast` for supported models. The official Codex CLI also maps both `fast` and explicit `priority` configuration to `priority` in its `ServiceTier::request_value` implementation. This is a Fast-mode request, not Ultrafast, and backend acceptance remains unobservable to this request hook.
 
 References:
 
 - [OpenAI Codex speed documentation](https://developers.openai.com/codex/speed)
+- [OpenAI Codex models and exact IDs](https://developers.openai.com/codex/models)
+- [OpenAI API Fast mode guide (`priority`/`fast` equivalence)](https://developers.openai.com/api/docs/guides/fast-mode)
 - [OpenAI Codex `ServiceTier`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs)
 - [Pi service-tier discussion](https://github.com/earendil-works/pi/issues/4074)
 
 ## Eligibility
 
-The matcher is intentionally provider-scoped and family-based:
+The matcher is intentionally provider-scoped:
 
 ```text
 provider == openai-codex
-model    == /^gpt-5\.(4|5|6)(?:$|-)/
+model    matches /^gpt-5\.(4|5|6)(?:$|-)/
+         OR is exactly gpt-6-astra, gpt-6-sol, gpt-6-luna, or gpt-6.1-sol
 ```
 
-This accepts named variants such as `gpt-5.6-sol` without maintaining a brittle variant allowlist. Expanding to another family requires a source-backed code change and release.
+The existing GPT-5 matcher still accepts named variants such as `gpt-5.6-sol`. GPT-6 support is an exact allowlist backed by the Codex speed and models pages, not a wildcard for future variants or snapshots. Bare `gpt-6`, `gpt-6-terra`, `gpt-6.1-astra`, and suffixed IDs remain inactive. Account and client availability is still controlled by OpenAI. Expanding eligibility requires a source-backed code change and release.
+
+Eligibility and pricing metadata are independent. `getFastCreditMultiplier` retains the existing GPT-5 estimates and returns `undefined` for GPT-6. An eligible model without an estimate still requests Priority and shows an active footer. Activation and status warn of higher usage and explicitly state that this extension has no model-specific speed or credit estimate. They do not extrapolate GPT-5 multipliers or use Ultrafast figures.
 
 The `openai` API-key provider is excluded. API Priority Processing has separate billing and operational semantics and should not be enabled implicitly by a ChatGPT Codex extension.
 
@@ -103,7 +108,7 @@ The primary command is a toggle, with explicit alternatives:
 /fast on | off | status
 ```
 
-Bare `/fast` toggles and persists the preference. `/fast on` and `/fast off` remain available for idempotent control, while `/fast status` is read-only. Because Fast mode materially increases credit consumption, every activation reports the expected speed and credit multipliers and the footer remains visible while the preference is active.
+Bare `/fast` toggles and persists the preference. `/fast on` and `/fast off` remain available for idempotent control, while `/fast status` is read-only. Because Fast mode materially increases usage, every activation reports the existing speed and credit estimates where available, otherwise higher usage with no model-specific estimate; the footer remains visible while the preference is active.
 
 Messages consistently say the extension *requests* Fast mode because the backend can downgrade or reject service-tier requests.
 
@@ -162,14 +167,16 @@ Requiring `/fast on` makes paid activation unambiguous, but adds friction to the
 
 ### Generic model allowlist
 
-An unbounded `openai-codex/*` matcher could send unsupported service tiers. A documented family matcher is conservative while still accepting named variants.
+An unbounded `openai-codex/*` or GPT-6 wildcard matcher could send unsupported service tiers. Preserve the existing GPT-5 family matcher, but add only explicitly documented GPT-6 IDs.
 
 ## Verification
 
 Automated checks cover:
 
 - provider/model eligibility;
-- documented credit multipliers;
+- existing GPT-5 credit multipliers and eligible GPT-6 models without pricing metadata;
+- rejection of undocumented GPT-6 variants and other providers;
+- honest unknown-estimate activation/status messages and read-only status behavior;
 - command parsing;
 - immutable payload transformation;
 - existing-tier behavior;

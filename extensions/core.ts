@@ -3,6 +3,9 @@ export const FAST_SERVICE_TIER = "priority";
 export const EXPECTED_SPEED_MULTIPLIER = 1.5;
 
 const SUPPORTED_MODEL_PATTERN = /^gpt-5\.(4|5|6)(?:$|-)/;
+// https://developers.openai.com/codex/speed and https://developers.openai.com/codex/models
+// Exact IDs only: Fast support is not guaranteed for future GPT-6 variants.
+const SUPPORTED_GPT6_MODELS = new Set(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 
 export interface ModelDescriptor {
 	readonly provider: string;
@@ -40,7 +43,8 @@ function fastModelVersion(model: ModelDescriptor | undefined): "5.4" | "5.5" | "
 }
 
 export function isFastEligible(model: ModelDescriptor | undefined): boolean {
-	return fastModelVersion(model) !== undefined;
+	if (!model || model.provider !== CODEX_PROVIDER) return false;
+	return fastModelVersion(model) !== undefined || SUPPORTED_GPT6_MODELS.has(model.id);
 }
 
 export function getFastCreditMultiplier(model: ModelDescriptor | undefined): number | undefined {

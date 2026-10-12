@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Fast-mode eligibility for the exact documented Codex IDs `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and `gpt-6.1-sol`, scoped to `openai-codex`; undocumented GPT-6 variants remain inactive.
+- Regression coverage for GPT-6 eligibility, provider exclusions, immutable Priority payloads, activation/status without pricing metadata, and unchanged preference semantics.
+
+### Fixed
+
+- Activation no longer treats missing credit estimates as ineligibility. Eligible GPT-6 models show active status and request `service_tier: "priority"`, with higher-usage messaging and no invented model-specific speed or credit multipliers.
+
+### Documentation
+
+- Cite the current OpenAI Codex speed/models pages and API Fast mode guide confirming `priority`/`fast` equivalence. Existing GPT-5 behavior, commands, persistence, and wire value are unchanged; this does not enable Ultrafast.
+
 ## [0.2.0] — 2026-07-30
 
 ### Changed

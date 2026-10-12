@@ -17,6 +17,8 @@ import { FAST_STATE_VERSION, loadFastState, saveFastState } from "./state.ts";
 
 const STATUS_KEY = "codex-fast-mode";
 const COMMAND_VALUES = ["on", "off", "status"] as const;
+const UNKNOWN_FAST_ESTIMATE =
+	"Fast mode uses higher usage; this extension has no model-specific speed or credit estimate.";
 
 export interface CodexFastModeDependencies {
 	getAgentDir?: () => string;
@@ -53,13 +55,17 @@ function statusMessage(enabled: boolean, model: ModelDescriptor | undefined): st
 	if (!isFastEligible(model)) {
 		return `Fast preference is on, but ${modelReference(model)} is not eligible; requests are unchanged.`;
 	}
-	return `Fast mode is on for ${modelReference(model)}. Requests ask for service_tier=${FAST_SERVICE_TIER}; backend acceptance is not guaranteed.`;
+	const estimate = getFastCreditMultiplier(model) === undefined ? ` ${UNKNOWN_FAST_ESTIMATE}` : "";
+	return `Fast mode is on for ${modelReference(model)}. Requests ask for service_tier=${FAST_SERVICE_TIER}; backend acceptance is not guaranteed.${estimate}`;
 }
 
 function enabledMessage(model: ModelDescriptor | undefined): string {
-	const creditMultiplier = getFastCreditMultiplier(model);
-	if (!creditMultiplier) {
+	if (!isFastEligible(model)) {
 		return `Fast preference enabled, but ${modelReference(model)} is not eligible; requests remain unchanged.`;
+	}
+	const creditMultiplier = getFastCreditMultiplier(model);
+	if (creditMultiplier === undefined) {
+		return `Fast mode enabled for ${modelReference(model)}. ${UNKNOWN_FAST_ESTIMATE} Requests ask for service_tier=${FAST_SERVICE_TIER}; the backend may downgrade them.`;
 	}
 	return `Fast mode enabled for ${modelReference(model)}: ~${EXPECTED_SPEED_MULTIPLIER}× speed and ~${creditMultiplier}× credits. Requests ask for service_tier=${FAST_SERVICE_TIER}; the backend may downgrade them.`;
 }

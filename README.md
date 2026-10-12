@@ -22,7 +22,7 @@ Codex sells a faster processing tier at a higher credit rate. pi has no built-in
   }
 ```
 
-That diff is the entire product. Everything below is about handling it carefully — because the field roughly doubles your credit burn, and the backend is free to ignore it.
+That diff is the entire product. Everything below is about handling it carefully — because Fast mode increases usage, and the backend is free to ignore it.
 
 > **Fast is a paid preference, not a guarantee.** The extension asks the Codex backend for Priority processing. OpenAI may reject or downgrade the requested tier, and a request hook cannot observe which tier actually served the response.
 
@@ -63,7 +63,18 @@ Requests ask for service_tier=priority; the backend may downgrade them.
 Fast mode disabled. This extension no longer modifies provider requests.
 ```
 
-Switch to a model outside the eligible families and the preference survives, but nothing is sent:
+On a documented GPT-6 model, eligibility does not depend on having a pricing estimate:
+
+```text
+❯ /fast on
+Fast mode enabled for openai-codex/gpt-6-astra.
+Fast mode uses higher usage; this extension has no model-specific speed or credit estimate.
+Requests ask for service_tier=priority; the backend may downgrade them.
+```
+
+The lines above are wrapped for readability. `/fast status` also reports that no model-specific estimate is available, while the footer shows `⚡ fast`.
+
+Switch to an ineligible model and the preference survives, but nothing is sent:
 
 ```text
 ❯ /fast status
@@ -76,18 +87,23 @@ Both conditions must hold:
 
 ```text
 provider == openai-codex
-model    == /^gpt-5\.(4|5|6)(?:$|-)/
+model    matches /^gpt-5\.(4|5|6)(?:$|-)/
+         OR is exactly gpt-6-astra, gpt-6-sol, gpt-6-luna, or gpt-6.1-sol
 ```
 
-The family regex accepts named variants such as `gpt-5.6-sol` without maintaining a brittle allowlist. Adding a family requires a source-backed code change and a release.
+The existing GPT-5 family regex still accepts named variants such as `gpt-5.6-sol`. GPT-6 support uses only the four exact IDs documented in [Codex speed](https://developers.openai.com/codex/speed) and [Codex models](https://developers.openai.com/codex/models), where available to your account and client. Unknown variants, suffixes, and bare `gpt-6` are not eligible. Expanding eligibility requires a source-backed code change and a release.
 
 | Model family | Expected speed | Credit usage |
 | --- | ---: | ---: |
 | GPT-5.4 | about 1.5× | about 2× |
 | GPT-5.5 | about 1.5× | about 2.5× |
 | GPT-5.6 | about 1.5× | about 2.5× |
+| GPT-6 Astra (`gpt-6-astra`) | not estimated | not estimated |
+| GPT-6 Sol (`gpt-6-sol`) | not estimated | not estimated |
+| GPT-6 Luna (`gpt-6-luna`) | not estimated | not estimated |
+| GPT-6.1 Sol (`gpt-6.1-sol`) | not estimated | not estimated |
 
-These are OpenAI's published figures from the [Codex speed documentation](https://developers.openai.com/codex/speed), not measurements taken here, and they can change. This package ships no benchmarks of its own; if you run one, see the reporting bar in [CONTRIBUTING.md](./CONTRIBUTING.md).
+The GPT-5 estimates are retained from the earlier releases and the [Codex speed documentation](https://developers.openai.com/codex/speed); they are not measurements taken here or guaranteed current billing rates. Current usage depends on the model, plan, included limits, and purchased credits. Check OpenAI's current [speed](https://developers.openai.com/codex/speed) and [pricing](https://developers.openai.com/codex/pricing) pages. This extension does not assign model-specific GPT-6 speed or credit multipliers: activation and status explicitly report higher usage with no estimate instead of treating missing pricing metadata as ineligibility. This package ships no benchmarks of its own; if you run one, see the reporting bar in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 pi's separate API-key `openai` provider is intentionally excluded. Its Priority Processing has different billing and operational semantics, and should not be switched on implicitly by a ChatGPT Codex extension.
 
@@ -96,7 +112,7 @@ pi's separate API-key `openai` provider is intentionally excluded. Its Priority 
 
 <br/>
 
-OpenAI's user-facing Codex configuration calls this tier `fast`. The Codex client maps both `fast` and an explicit `priority` config to `priority` on the wire — see [`ServiceTier::request_value`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs). Sending `service_tier: "fast"` would copy the configuration vocabulary rather than the actual request contract.
+This extension retains its existing wire value, `priority`. OpenAI's current [API Fast mode guide](https://developers.openai.com/api/docs/guides/fast-mode) documents that `service_tier: "priority"` provides the same behavior as `service_tier: "fast"` for supported models. The Codex client also maps its user-facing Fast configuration to `priority` — see [`ServiceTier::request_value`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs). This requests Fast mode, not the separate Ultrafast tier, and does not establish which tier the backend actually serves.
 
 </details>
 
@@ -112,7 +128,7 @@ OpenAI's user-facing Codex configuration calls this tier `fast`. The Codex clien
 
 ## Safety model
 
-- **Off by default, with visible paid activation.** Missing, malformed, or future-version state defaults to off. Toggling on immediately reports the expected credit multiplier and adds the footer indicator.
+- **Off by default, with visible paid activation.** Missing, malformed, or future-version state defaults to off. Toggling on immediately reports the existing estimate when available, otherwise higher usage with no model-specific speed or credit estimate, and adds the footer indicator.
 - **The incoming payload is never mutated.** The hook returns a shallow copy differing by one key, and returns nothing at all when disabled or ineligible.
 - **`--fast` cannot become persistent.** It applies to one process and is never written to disk.
 - **No failure here blocks a request.** An unusable payload, a failed write, or an ineligible model degrades to leaving the request alone, plus a one-time warning.

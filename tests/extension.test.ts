@@ -27,6 +27,7 @@ const temporaryDirectories: string[] = [];
 interface HarnessOptions {
 	fastFlag?: boolean;
 	modelId?: string;
+	provider?: string;
 	loadState?: CodexFastModeDependencies["loadState"];
 	saveState?: CodexFastModeDependencies["saveState"];
 }
@@ -59,7 +60,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 		mode: "tui",
 		hasUI: true,
 		model: {
-			provider: "openai-codex",
+			provider: options.provider ?? "openai-codex",
 			id: options.modelId ?? "gpt-5.6-sol",
 		},
 		ui: {
@@ -98,6 +99,113 @@ afterEach(async () => {
 });
 
 describe("Codex Fast mode extension", () => {
+	it.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])(
+		"enables %s with honest unknown estimates and read-only status",
+		async (modelId) => {
+			let reads = 0;
+			let writes = 0;
+			const harness = await createHarness({
+				modelId,
+				loadState: async (agentDir) => {
+					reads++;
+					return loadFastState(agentDir);
+				},
+				saveState: async (agentDir, state) => {
+					writes++;
+					return saveFastState(agentDir, state);
+				},
+			});
+			await harness.emit("session_start", { type: "session_start" });
+			await harness.command.handler("on", harness.context);
+
+			expect(harness.statuses.get("codex-fast-mode")).toBe("⚡ fast");
+			expect((await loadFastState(harness.agentDir)).state.enabled).toBe(true);
+			const enabledMessage = harness.notifications.at(-1)?.message;
+			expect(enabledMessage).toContain(`Fast mode enabled for openai-codex/${modelId}`);
+			expect(enabledMessage).toContain("higher usage");
+			expect(enabledMessage).toContain("no model-specific speed or credit estimate");
+			expect(enabledMessage).toContain("backend may downgrade");
+			expect(enabledMessage).not.toMatch(/not eligible|~\d|×/);
+
+			const payload = Object.freeze({ model: modelId, reasoning: { effort: "high" } });
+			expect(await harness.emit("before_provider_request", { payload })).toEqual({
+				...payload,
+				service_tier: "priority",
+			});
+			expect(payload).not.toHaveProperty("service_tier");
+
+			await harness.command.handler("status", harness.context);
+			const statusMessage = harness.notifications.at(-1)?.message;
+			expect(statusMessage).toContain(`Fast mode is on for openai-codex/${modelId}`);
+			expect(statusMessage).toContain("service_tier=priority");
+			expect(statusMessage).toContain("backend acceptance is not guaranteed");
+			expect(statusMessage).toContain("no model-specific speed or credit estimate");
+			expect(statusMessage).not.toMatch(/not eligible|~\d|×/);
+			expect(reads).toBe(1);
+			expect(writes).toBe(1);
+
+			await harness.command.handler("off", harness.context);
+			expect((await loadFastState(harness.agentDir)).state.enabled).toBe(false);
+			expect(harness.statuses.get("codex-fast-mode")).toBeUndefined();
+			expect(await harness.emit("before_provider_request", { payload })).toBeUndefined();
+		},
+	);
+
+	it.each([
+		{ modelId: "gpt-6-terra" },
+		{ modelId: "gpt-6-sol-mini" },
+		{ modelId: "gpt-6.1-astra" },
+		{ provider: "openai", modelId: "gpt-6-astra" },
+		{ provider: "openai", modelId: "gpt-6-sol" },
+		{ provider: "openai", modelId: "gpt-6-luna" },
+		{ provider: "openai", modelId: "gpt-6.1-sol" },
+	])(
+		"keeps unsupported $provider/$modelId inactive even without pricing metadata",
+		async (options) => {
+			const harness = await createHarness(options);
+			await harness.emit("session_start", { type: "session_start" });
+			await harness.command.handler("on", harness.context);
+			expect(harness.notifications.at(-1)?.message).toContain("not eligible");
+			expect(harness.statuses.get("codex-fast-mode")).toBe("⚡ fast (inactive)");
+			expect((await loadFastState(harness.agentDir)).state.enabled).toBe(true);
+			await harness.command.handler("status", harness.context);
+			expect(harness.notifications.at(-1)?.message).toContain(
+				"not eligible; requests are unchanged",
+			);
+			const payload = Object.freeze({ model: options.modelId });
+			expect(await harness.emit("before_provider_request", { payload })).toBeUndefined();
+			expect(payload).not.toHaveProperty("service_tier");
+		},
+	);
+
+	it("activates a saved GPT-6 preference and --fast without changing persistence semantics", async () => {
+		const saved = await createHarness({ modelId: "gpt-6-astra" });
+		await saveFastState(saved.agentDir, { version: FAST_STATE_VERSION, enabled: true });
+		await saved.emit("session_start", { type: "session_start" });
+		expect(saved.statuses.get("codex-fast-mode")).toBe("⚡ fast");
+		expect(await saved.emit("before_provider_request", { payload: {} })).toEqual({
+			service_tier: "priority",
+		});
+
+		const flagged = await createHarness({ modelId: "gpt-6.1-sol", fastFlag: true });
+		await flagged.emit("session_start", { type: "session_start" });
+		expect(flagged.statuses.get("codex-fast-mode")).toBe("⚡ fast");
+		expect(await flagged.emit("before_provider_request", { payload: {} })).toEqual({
+			service_tier: "priority",
+		});
+		expect((await loadFastState(flagged.agentDir)).state.enabled).toBe(false);
+	});
+
+	it("marks documented GPT-6 models active after a model switch", async () => {
+		const harness = await createHarness({ modelId: "gpt-6-terra", fastFlag: true });
+		await harness.emit("session_start", { type: "session_start" });
+		expect(harness.statuses.get("codex-fast-mode")).toBe("⚡ fast (inactive)");
+		await harness.emit("model_select", {
+			model: { provider: "openai-codex", id: "gpt-6-sol" },
+		});
+		expect(harness.statuses.get("codex-fast-mode")).toBe("⚡ fast");
+	});
+
 	it("starts disabled and leaves provider requests untouched", async () => {
 		const harness = await createHarness();
 		await harness.emit("session_start", { type: "session_start" });
@@ -128,7 +236,13 @@ describe("Codex Fast mode extension", () => {
 		expect(payload).not.toHaveProperty("service_tier");
 		expect((await loadFastState(harness.agentDir)).state.enabled).toBe(true);
 		expect(harness.statuses.get("codex-fast-mode")).toBe("⚡ fast");
-		expect(harness.notifications.at(-1)?.message).toContain("~2.5× credits");
+		expect(harness.notifications.at(-1)?.message).toBe(
+			"Fast mode enabled for openai-codex/gpt-5.6-sol: ~1.5× speed and ~2.5× credits. Requests ask for service_tier=priority; the backend may downgrade them.",
+		);
+		await harness.command.handler("status", harness.context);
+		expect(harness.notifications.at(-1)?.message).toBe(
+			"Fast mode is on for openai-codex/gpt-5.6-sol. Requests ask for service_tier=priority; backend acceptance is not guaranteed.",
+		);
 	});
 
 	it("disables, persists, clears status, and stops modifying requests", async () => {
